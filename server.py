@@ -38,11 +38,13 @@ class _KataGo:
     """Lifetime-of-process wrapper around `katago analysis`."""
 
     def __init__(self) -> None:
+        # stderr is left attached to the container so KataGo's startup messages
+        # (model load, GPU/Eigen backend, etc.) and any crash trace show up in
+        # `docker logs`. KataGo writes a lot to stderr but it's worth seeing.
         self.proc = subprocess.Popen(
             [KATAGO_BIN, "analysis", "-model", KATAGO_MODEL, "-config", KATAGO_CONFIG],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
             bufsize=1,
             text=True,
         )
@@ -81,17 +83,30 @@ class _KataGo:
 
 
 _engine: _KataGo | None = None
+_engine_lock = threading.Lock()
+_engine_error: str | None = None
 
 
-@app.on_event("startup")
-def _startup() -> None:
-    global _engine
-    _engine = _KataGo()
+def _get_engine() -> _KataGo:
+    """Lazily start KataGo on first move request so /healthz works during boot."""
+    global _engine, _engine_error
+    if _engine is not None:
+        return _engine
+    with _engine_lock:
+        if _engine is not None:
+            return _engine
+        try:
+            _engine = _KataGo()
+        except Exception as e:
+            _engine_error = repr(e)
+            raise
+    return _engine
 
 
 @app.get("/healthz")
 def healthz() -> dict:
-    return {"ok": True, "alive": _engine is not None and _engine.proc.poll() is None}
+    alive = _engine is not None and _engine.proc.poll() is None
+    return {"ok": True, "engine_started": _engine is not None, "alive": alive, "error": _engine_error}
 
 
 # Coordinate translation between (x, y) where (0, 0) is top-left and KataGo's
@@ -113,8 +128,10 @@ class MoveRequest(BaseModel):
 
 @app.post("/move")
 def get_move(req: MoveRequest) -> dict:
-    if _engine is None:
-        raise HTTPException(status_code=503, detail="engine not ready")
+    try:
+        engine = _get_engine()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"engine failed to start: {e}")
     payload = {
         "initialStones": [],
         "moves": req.moves,
@@ -125,7 +142,7 @@ def get_move(req: MoveRequest) -> dict:
         "analyzeTurns": [len(req.moves)],
         "maxVisits": req.max_visits,
     }
-    msg = _engine.query(payload)
+    msg = engine.query(payload)
     move_infos = msg.get("moveInfos", [])
     if not move_infos:
         return {"move": "pass", "winrate": None}

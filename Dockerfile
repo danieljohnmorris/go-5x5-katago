@@ -12,7 +12,7 @@ RUN apt-get update \
 ARG KATAGO_VERSION=1.16.4
 RUN set -eux; \
     curl -fL --retry 5 --retry-delay 2 \
-      "https://github.com/lightvector/KataGo/releases/download/v${KATAGO_VERSION}/katago-v${KATAGO_VERSION}-eigenavx2-linux-x64.zip" \
+      "https://github.com/lightvector/KataGo/releases/download/v${KATAGO_VERSION}/katago-v${KATAGO_VERSION}-eigen-linux-x64.zip" \
       -o /tmp/katago.zip; \
     unzip -o /tmp/katago.zip -d /tmp/katago; \
     install -m 0755 /tmp/katago/katago /usr/local/bin/katago; \
